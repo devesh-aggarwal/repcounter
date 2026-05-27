@@ -63,4 +63,34 @@ final class RepDetectorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(reps, 9)
         XCTAssertLessThanOrEqual(reps, 11)
     }
+
+    func testSetEndsAfterMotionStops() {
+        // 1 Hz sine for 10 s, then 6 s of silence. Expect a setEnded event within ~4 s of motion stopping.
+        let active = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5, duration: 10.0)
+        let lastT = active.last!.timestamp
+        let quiet = SignalGenerators.silence(duration: 6.0, startTime: lastT + SignalGenerators.dt)
+        let samples = active + quiet
+
+        let detector = RepDetector(sampleRate: 50)
+        var setEndDetectedAt: TimeInterval? = nil
+        var setEndCount: Int? = nil
+        for s in samples {
+            detector.onEvent = { event in
+                if case .setEnded(let c) = event, setEndCount == nil {
+                    setEndCount = c
+                }
+            }
+            detector.process(s)
+            if setEndCount != nil && setEndDetectedAt == nil {
+                setEndDetectedAt = s.timestamp
+            }
+        }
+
+        XCTAssertNotNil(setEndDetectedAt, "Expected a setEnded event after motion stopped")
+        XCTAssertGreaterThanOrEqual(setEndCount ?? 0, 9)
+        XCTAssertLessThanOrEqual(setEndCount ?? 0, 11)
+        let delay = (setEndDetectedAt ?? 0) - lastT
+        XCTAssertGreaterThan(delay, 3.5, "Set-end should not fire too eagerly (got \(delay)s)")
+        XCTAssertLessThan(delay, 5.5, "Set-end should fire within ~4 s of motion stopping (got \(delay)s)")
+    }
 }
