@@ -89,13 +89,19 @@ State flows one way: `MotionSampler` → `RepDetector` → `WorkoutSession` → 
 
 ### Signal construction
 
-Per sample, compute a single scalar:
+Per sample, compute a single **signed** scalar by projecting `userAcceleration` onto the vertical (gravity) direction:
 
 ```
-s(t) = ‖userAcceleration(t)‖ + α · ‖rotationRate(t)‖
+s(t) = userAcceleration(t) · ĝ(t)
 ```
 
-with `α = 0.3`. `userAcceleration` is in g; `rotationRate` is in rad/s. The factor `α` was chosen so that a typical curl (≈1 g translational, ≈3 rad/s rotational) contributes roughly equally from both terms.
+where `ĝ(t)` is the gravity unit vector reported by CoreMotion. In the watch's local frame, gravity points along the wrist-frame's "down" direction; projecting onto it gives the component of motion that fights gravity. This is signed (positive when accelerating upward, negative when downward) so the band-pass filter and peak detector see a true one-peak-per-cycle signal.
+
+**Why not vector magnitude?** Magnitude (`‖userAcceleration‖`) is always ≥ 0 — it rectifies a sinusoidal motion signal and doubles the apparent frequency. The detector would then count two reps per actual cycle. Projecting onto gravity preserves sign.
+
+**Why drop gyro for v1?** Gyro magnitude rectifies the same way, and projecting gyro onto gravity gives only the rotation around the vertical axis (which is secondary for most strength exercises). v1 detects on accel projection alone. v2 can layer in gyro via a separate signed feature.
+
+**Frame convention.** Incoming `MotionSample`s are assumed to be in a frame where the z-axis is roughly vertical. In production, `MotionSampler` will arrange this by using `.xArbitraryZVertical` reference frame. In tests, signal generators write motion on `accel.z` and the gravity unit is `(0, 0, 1)`.
 
 ### Band-pass filter
 
@@ -167,10 +173,10 @@ The HKLiveWorkoutBuilder is started/stopped alongside the session. We do not col
 
 ### `MotionSampler`
 
-- **Purpose:** Wrap CoreMotion and emit a clean stream of motion samples.
+- **Purpose:** Wrap CoreMotion and emit a clean stream of motion samples in a gravity-aligned frame.
 - **Interface:**
   - `start()` / `stop()`
-  - `samples: AsyncStream<MotionSample>` where `MotionSample = (timestamp: TimeInterval, accel: SIMD3<Double>, gyro: SIMD3<Double>)`
+  - Emits `MotionSample = (timestamp: TimeInterval, accel: SIMD3<Double>, gyro: SIMD3<Double>)` where `accel` is `userAcceleration` and `gyro` is `rotationRate`, both expressed in CoreMotion's `.xArbitraryZVertical` reference frame so the z-axis is roughly vertical. The detector uses `accel.z` as its signed primary signal.
 - **Depends on:** `CMMotionManager`
 
 ### `RepDetector`

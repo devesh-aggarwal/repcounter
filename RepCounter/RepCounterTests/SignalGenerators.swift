@@ -7,7 +7,7 @@ enum SignalGenerators {
     static let sampleRate: Double = 50.0
     static var dt: Double { 1.0 / sampleRate }
 
-    /// Sine wave on the X axis of acceleration, zero gyro.
+    /// Sine wave on the Z axis of acceleration (vertical, signed).
     static func sine(frequency: Double, amplitude: Double, duration: Double,
                      startTime: TimeInterval = 0) -> [MotionSample] {
         let n = Int(duration * sampleRate)
@@ -15,12 +15,12 @@ enum SignalGenerators {
             let t = startTime + Double(i) * dt
             let v = amplitude * sin(2 * .pi * frequency * t)
             return MotionSample(timestamp: t,
-                                accel: SIMD3(v, 0, 0),
+                                accel: SIMD3(0, 0, v),
                                 gyro: SIMD3(0, 0, 0))
         }
     }
 
-    /// Sine with amplitude ramping linearly from a0 to a1 across the duration.
+    /// Sine on the Z axis with amplitude ramping linearly from a0 to a1 across the duration.
     static func sineRamp(frequency: Double, a0: Double, a1: Double, duration: Double) -> [MotionSample] {
         let n = Int(duration * sampleRate)
         return (0..<n).map { i in
@@ -28,11 +28,11 @@ enum SignalGenerators {
             let frac = Double(i) / Double(max(n - 1, 1))
             let amp = a0 + (a1 - a0) * frac
             let v = amp * sin(2 * .pi * frequency * t)
-            return MotionSample(timestamp: t, accel: SIMD3(v, 0, 0), gyro: SIMD3(0, 0, 0))
+            return MotionSample(timestamp: t, accel: SIMD3(0, 0, v), gyro: SIMD3(0, 0, 0))
         }
     }
 
-    /// Gaussian noise (Box-Muller). Deterministic via seed.
+    /// Gaussian noise (Box-Muller) on the Z axis of acceleration. Deterministic via seed.
     static func noise(sigma: Double, duration: Double, seed: UInt64 = 42) -> [MotionSample] {
         var rng = SeededRNG(seed: seed)
         let n = Int(duration * sampleRate)
@@ -41,7 +41,7 @@ enum SignalGenerators {
             let u1 = max(rng.nextDouble(), 1e-12)
             let u2 = rng.nextDouble()
             let z = sqrt(-2 * log(u1)) * cos(2 * .pi * u2)
-            return MotionSample(timestamp: t, accel: SIMD3(sigma * z, 0, 0), gyro: SIMD3(0, 0, 0))
+            return MotionSample(timestamp: t, accel: SIMD3(0, 0, sigma * z), gyro: SIMD3(0, 0, 0))
         }
     }
 

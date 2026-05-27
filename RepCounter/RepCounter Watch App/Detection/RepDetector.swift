@@ -1,14 +1,12 @@
 import Foundation
-import simd
 
 /// Detects rhythmic reps in a motion sample stream.
-/// Algorithm: combined accel+gyro magnitude → band-pass (0.25 Hz HPF + 4 Hz LPF)
+/// Algorithm: signed vertical (Z) acceleration → band-pass (0.25 Hz HPF + 4 Hz LPF)
 /// → adaptive envelope (rolling RMS) → hysteresis peak detection with refractory.
 final class RepDetector {
 
     // MARK: Tunables (see spec § Detection algorithm)
     private let sampleRate: Double
-    private let gyroWeight: Double = 0.3
     private let envWindowSeconds: Double = 2.0
     private let thresholdK: Double = 0.5
     private let noiseFloor: Double = 0.02
@@ -76,10 +74,10 @@ final class RepDetector {
         lastSampleTime = t
         let elapsed = t - (startTime ?? t)
 
-        // 1. Combine acceleration and rotation into a single magnitude signal.
-        let accelMag = length(sample.accel)
-        let gyroMag = length(sample.gyro)
-        let s = accelMag + gyroWeight * gyroMag
+        // 1. Signed vertical-axis acceleration. The watch is assumed to be in a
+        //    gravity-aligned frame (see MotionSampler + spec). Using signed Z
+        //    preserves cycle direction so the band-pass output peaks once per rep.
+        let s = sample.accel.z
 
         // 2. Band-pass filter (HPF then LPF).
         let hp = hpf.process(s)
