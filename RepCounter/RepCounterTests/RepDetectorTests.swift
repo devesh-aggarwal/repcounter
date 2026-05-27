@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import RepCounter_Watch_App
 
 final class RepDetectorTests: XCTestCase {
@@ -92,5 +93,34 @@ final class RepDetectorTests: XCTestCase {
         let delay = (setEndDetectedAt ?? 0) - lastT
         XCTAssertGreaterThan(delay, 3.5, "Set-end should not fire too eagerly (got \(delay)s)")
         XCTAssertLessThan(delay, 5.5, "Set-end should fire within ~4 s of motion stopping (got \(delay)s)")
+    }
+
+    func testSingleImpactSpikeIgnored() {
+        // Flat zero for 5 s with one 3 g spike at t=2 s on the vertical axis.
+        var samples = SignalGenerators.silence(duration: 5.0)
+        let spikeIdx = Int(2.0 * SignalGenerators.sampleRate)
+        samples[spikeIdx] = MotionSample(
+            timestamp: samples[spikeIdx].timestamp,
+            accel: SIMD3(0, 0, 3.0),
+            gyro: SIMD3(0, 0, 0)
+        )
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertEqual(reps, 0, "A single impact spike must not be counted")
+    }
+
+    func testRefractoryPreventsDoubleCount() {
+        // 1 Hz primary sine on accel.z with a small secondary bump 100 ms after each peak.
+        // Combine 1 Hz at 0.5 g amplitude with 1 Hz at 0.2 g phase-shifted by -100 ms (= -0.628 rad).
+        let n = Int(10.0 * SignalGenerators.sampleRate)
+        let samples: [MotionSample] = (0..<n).map { i in
+            let t = Double(i) * SignalGenerators.dt
+            let v = 0.5 * sin(2 * .pi * 1.0 * t)
+                  + 0.2 * sin(2 * .pi * 1.0 * t - 0.628)
+            return MotionSample(timestamp: t, accel: SIMD3(0, 0, v), gyro: SIMD3(0, 0, 0))
+        }
+        let reps = repCount(runDetector(on: samples))
+        // ~10 cycles in 10s, expect 9–11 — not 18–20.
+        XCTAssertGreaterThanOrEqual(reps, 9)
+        XCTAssertLessThanOrEqual(reps, 11)
     }
 }
