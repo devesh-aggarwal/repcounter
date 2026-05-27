@@ -19,6 +19,7 @@ final class RepDetector {
     private let impactRatio: Double = 5.0
     private let impactWindowSeconds: Double = 0.2
     private let impactSuppressSeconds: Double = 0.3
+    private let impactAbsoluteThreshold: Double = 2.0  // g — physical impacts (drops, clinks)
 
     // MARK: Filters
     private let hpf: BiquadFilter
@@ -91,7 +92,13 @@ final class RepDetector {
         }
         let env = sqrt(envSumSq / Double(envBuffer.count))
 
-        // 4. Impact suppression: env jumping 5× over 200 ms window?
+        // 4. Impact suppression: arm a lockout on either an absolute-spike
+        //    (catches drops from silence, where the env-ratio check below
+        //    would not fire) or a 5× env jump (catches transitions during
+        //    rhythmic motion).
+        if abs(sample.accel.z) >= impactAbsoluteThreshold {
+            lastImpactSuppressUntil = t + impactSuppressSeconds
+        }
         envHistoryShort.append(env)
         if envHistoryShort.count > envShortCapacity {
             envHistoryShort.removeFirst()

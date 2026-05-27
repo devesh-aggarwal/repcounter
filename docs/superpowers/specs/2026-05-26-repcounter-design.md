@@ -155,7 +155,7 @@ The current rep count is moved to "last set"; the current count resets to 0; det
 ### Edge cases
 
 - **Warmup:** The first 500 ms of a session feeds the filters but emits no reps (avoids filter transient artifacts).
-- **Impact suppression:** If `env` jumps 5× over a 200 ms window, suppress rep emission for 300 ms (handles dropping the bar, dumbbell clinks).
+- **Impact suppression:** Either of two triggers arms a 300 ms rep-emission lockout: (a) `env` jumps 5× over a 200 ms window (catches transitions during rhythmic motion), or (b) the instantaneous `|accel.z|` exceeds 2 g (catches isolated equipment impacts during silence, where the env-ratio check would not fire because the prior env is ~0).
 - **Pause:** Motion sampling stops; HK session stays alive; on resume, treat the next 500 ms as warmup again.
 
 ## Background execution
