@@ -214,7 +214,7 @@ All tests feed synthetic sample streams; none require a device.
 | Clean periodic signal | Pure sine, amp 0.5 g, at 0.5 / 1 / 2 / 3 Hz, 10 cycles each | reps == 10 ± 1 |
 | Rising amplitude | Sine 1 Hz, amp ramps 0.1 g → 1.0 g over 10 cycles | reps == 10 ± 1 |
 | Subtle vibration (leg-day case) | Sine 0.7 Hz, amp 0.05 g, on top of σ=0.02 g Gaussian noise | reps detected; count == cycles ± 1 |
-| Pure noise | σ=0.05 g Gaussian noise, 10 s | reps == 0 |
+| Still-wrist sensor noise | σ=0.01 g Gaussian noise, 10 s | reps == 0 |
 | Single impact spike | Flat + one 3 g pulse | reps == 0 |
 | Set-end timing | Sine 1 Hz for 5 s, then flat | `setEnded` fires within 4.0 ± 0.5 s of motion stopping |
 | Refractory | Sine 1 Hz with secondary bump 100 ms after each peak | reps == 1 per cycle (not 2) |
@@ -248,4 +248,5 @@ Each trace is annotated with the ground-truth rep count per set. The test harnes
 
 - **Refractory tuning** — the 0.6× factor is a starting guess; recorded-trace tests will tell us if it needs adjustment.
 - **Noise floor calibration** — 0.02 g is a starting point; may need per-device tuning if older Apple Watches have noisier IMUs.
+- **High-noise environment rejection** — v1 unit tests verify rejection of still-wrist sensor noise (σ ≈ 0.01 g). Rejection of high-amplitude ambient motion (walking around with no exercise, σ ≈ 0.05 g) is verified manually on-device (Task 14's "walking around" check). If false-positives occur during manual testing, v2 should add a periodicity gate that requires consistent inter-peak intervals before emitting reps.
 - **HealthKit authorization** — HKWorkoutSession is required for background motion sampling, so the app cannot function without it. If the user denies HealthKit, show a blocking message with an "Open Settings" deep link rather than attempting a degraded foreground-only mode.

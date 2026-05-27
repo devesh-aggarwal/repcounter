@@ -36,4 +36,31 @@ final class RepDetectorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(reps, 9)
         XCTAssertLessThanOrEqual(reps, 11)
     }
+
+    func testStillWristProducesNoReps() {
+        // σ=0.01 g represents accelerometer noise on a wrist held still.
+        // (High-amplitude ambient motion rejection is covered by the on-device
+        // walking-around check in the manual test plan, not here.)
+        let samples = SignalGenerators.noise(sigma: 0.01, duration: 10.0)
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertEqual(reps, 0, "A still wrist should not produce any reps")
+    }
+
+    func testSubtleVibrationOnNoise() {
+        // Spec "leg-day vibration" case: 0.7 Hz sine, amp 0.05 g, on top of σ=0.02 g noise.
+        let sine = SignalGenerators.sine(frequency: 0.7, amplitude: 0.05, duration: 14.0) // ~10 cycles
+        let noise = SignalGenerators.noise(sigma: 0.02, duration: 14.0)
+        let mixed = SignalGenerators.add(sine, noise)
+        let reps = repCount(runDetector(on: mixed))
+        XCTAssertGreaterThanOrEqual(reps, 8, "Subtle vibration should still be detected")
+        XCTAssertLessThanOrEqual(reps, 12)
+    }
+
+    func testRisingAmplitudeStillCounted() {
+        // 1 Hz sine, amplitude ramps 0.1 g → 1.0 g over 10 cycles.
+        let samples = SignalGenerators.sineRamp(frequency: 1.0, a0: 0.1, a1: 1.0, duration: 10.0)
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertGreaterThanOrEqual(reps, 9)
+        XCTAssertLessThanOrEqual(reps, 11)
+    }
 }
