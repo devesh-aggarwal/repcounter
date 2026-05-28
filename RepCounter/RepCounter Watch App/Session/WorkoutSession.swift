@@ -45,8 +45,8 @@ final class WorkoutSession: NSObject {
         guard phase == .idle else { return }
         phase = .requestingAuth
         let types: Set = [HKObjectType.workoutType()]
-        healthStore.requestAuthorization(toShare: types, read: []) { [weak self] granted, _ in
-            Task { @MainActor in
+        healthStore.requestAuthorization(toShare: types, read: []) { granted, _ in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 if !granted {
                     self.phase = .authDenied
