@@ -108,6 +108,37 @@ final class RepDetectorTests: XCTestCase {
         XCTAssertEqual(reps, 0, "A single impact spike must not be counted")
     }
 
+    func testSingleBurstIgnored() {
+        // The counter should wait for a sustained rhythm before counting. A
+        // single isolated rep-like oscillation (then stillness) must not count.
+        let settle = SignalGenerators.silence(duration: 1.0)
+        let oneCycle = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5,
+                                             duration: 1.0, startTime: 1.0)
+        let tail = SignalGenerators.silence(duration: 3.0, startTime: 2.0)
+        let reps = repCount(runDetector(on: settle + oneCycle + tail))
+        XCTAssertEqual(reps, 0, "A single isolated motion must not be counted")
+    }
+
+    func testCountJumpsToConfirmThreshold() {
+        // Reps are buffered until a consistent rhythm is confirmed, then the
+        // backlog is flushed at once: the count stays at 0, then jumps to 3.
+        let samples = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5, duration: 10.0)
+        let detector = RepDetector(sampleRate: 50)
+        var repTimes: [TimeInterval] = []
+        for s in samples {
+            detector.onEvent = { event in
+                if case .rep = event { repTimes.append(s.timestamp) }
+            }
+            detector.process(s)
+        }
+        XCTAssertGreaterThanOrEqual(repTimes.count, 4, "Expected several reps from 10 cycles")
+        // The first three reps are flushed together at the lock-on instant.
+        XCTAssertEqual(repTimes[0], repTimes[1], "First 3 reps should flush at once")
+        XCTAssertEqual(repTimes[1], repTimes[2], "First 3 reps should flush at once")
+        // Subsequent reps are counted live, strictly later.
+        XCTAssertGreaterThan(repTimes[3], repTimes[2], "4th rep should be counted live, later")
+    }
+
     func testRefractoryPreventsDoubleCount() {
         // 1 Hz primary sine on accel.z with a small secondary bump 100 ms after each peak.
         // Combine 1 Hz at 0.5 g amplitude with 1 Hz at 0.2 g phase-shifted by -100 ms (= -0.628 rad).
