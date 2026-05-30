@@ -57,8 +57,11 @@ final class WorkoutSession: NSObject {
         guard phase == .idle || phase == .failed else { return }
         detector.reset()
         sampler.start()
-        startRuntimeSession()
+        // Flip to the active UI before touching the runtime session: its start()
+        // can stall on device, and we never want that between the tap and the
+        // first render.
         phase = .active
+        startRuntimeSession()
     }
 
     func pause() {
@@ -95,7 +98,14 @@ final class WorkoutSession: NSObject {
         let session = WKExtendedRuntimeSession()
         session.delegate = self
         runtimeSession = session
-        session.start()
+        // `WKExtendedRuntimeSession.start()` can block the calling thread for a
+        // second or two on real hardware. Calling it on the main thread freezes
+        // the UI right after the user taps Start (and on every renewal), so run
+        // it off the main thread. Delegate callbacks are still delivered on main.
+        let box = UncheckedSendableBox(session)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.value.start()
+        }
     }
 
     @MainActor
@@ -118,6 +128,14 @@ final class WorkoutSession: NSObject {
                          lastSetReps: lastSetReps,
                          setNumber: setNumber))
     }
+}
+
+/// Hands a non-`Sendable` WatchKit object to a background queue for a single,
+/// otherwise-safe call. The session is created, stored, and invalidated on the
+/// main thread; we only move the blocking `start()` off it.
+private struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }
 
 // MARK: - WKExtendedRuntimeSessionDelegate
