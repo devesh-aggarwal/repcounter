@@ -7,10 +7,10 @@ struct WorkoutView: View {
     var body: some View {
         ZStack {
             switch session.phase {
-            case .idle, .requestingAuth:
+            case .idle:
                 idleView
-            case .authDenied:
-                deniedView
+            case .failed:
+                failedView
             case .active, .paused:
                 activeView
             }
@@ -29,7 +29,7 @@ struct WorkoutView: View {
             Button {
                 session.start()
             } label: {
-                Label("Start Workout", systemImage: "play.fill")
+                Label("Start Counting", systemImage: "play.fill")
                     .font(.body.weight(.semibold))
             }
             .buttonStyle(.borderedProminent)
@@ -37,14 +37,14 @@ struct WorkoutView: View {
         }
     }
 
-    private var deniedView: some View {
+    private var failedView: some View {
         VStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow)
-            Text("RepCounter needs Health access to run workouts.")
+            Text("Background tracking stopped. Counting may pause when the screen sleeps.")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
-            Button("Reset") { session.phase = .idle }
+            Button("Restart") { session.start() }
                 .buttonStyle(.bordered)
         }
         .padding(.horizontal, 8)

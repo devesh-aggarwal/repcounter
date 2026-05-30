@@ -1,5 +1,4 @@
 import Foundation
-import HealthKit
 import WatchKit
 import Observation
 
@@ -8,10 +7,12 @@ final class WorkoutSession: NSObject {
 
     enum Phase {
         case idle
-        case requestingAuth
-        case authDenied
         case active
         case paused
+        /// The extended-runtime session could not be started or was invalidated
+        /// for a non-recoverable reason. Rep detection won't survive the screen
+        /// sleeping in this state.
+        case failed
     }
 
     // MARK: Observable state
@@ -21,11 +22,15 @@ final class WorkoutSession: NSObject {
     var setNumber: Int = 1
 
     // MARK: Internals
-    private let healthStore = HKHealthStore()
-    private var workoutSession: HKWorkoutSession?
-    private var workoutBuilder: HKLiveWorkoutBuilder?
     private let sampler = MotionSampler()
     private let detector = RepDetector(sampleRate: 50)
+
+    /// Keeps the app process alive (and motion streaming) while the wrist is
+    /// down / screen is off, without an HKWorkoutSession. Sessions are time
+    /// capped by the system, so we renew on the will-expire warning.
+    private var runtimeSession: WKExtendedRuntimeSession?
+
+    private let store = RepStore()
 
     override init() {
         super.init()
@@ -37,75 +42,60 @@ final class WorkoutSession: NSObject {
                 self?.handleDetectorEvent(event)
             }
         }
+        // Restore any count that was in progress if the app was killed/expired
+        // mid-session, so the running total is never lost.
+        if let snapshot = store.load() {
+            currentSetReps = snapshot.currentSetReps
+            lastSetReps = snapshot.lastSetReps
+            setNumber = snapshot.setNumber
+        }
     }
 
     // MARK: Public actions
 
     func start() {
-        guard phase == .idle else { return }
-        phase = .requestingAuth
-        let types: Set = [HKObjectType.workoutType()]
-        healthStore.requestAuthorization(toShare: types, read: []) { granted, _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if !granted {
-                    self.phase = .authDenied
-                    return
-                }
-                self.beginWorkout()
-            }
-        }
+        guard phase == .idle || phase == .failed else { return }
+        detector.reset()
+        sampler.start()
+        startRuntimeSession()
+        phase = .active
     }
 
     func pause() {
         guard phase == .active else { return }
         sampler.stop()
-        workoutSession?.pause()
         phase = .paused
     }
 
     func resume() {
         guard phase == .paused else { return }
         detector.reset()
-        workoutSession?.resume()
+        if runtimeSession?.state != .running {
+            startRuntimeSession()
+        }
         sampler.start()
         phase = .active
     }
 
     func end() {
         sampler.stop()
-        workoutBuilder?.endCollection(withEnd: Date()) { _, _ in }
-        workoutSession?.end()
-        workoutBuilder?.finishWorkout { _, _ in }
-        workoutSession = nil
-        workoutBuilder = nil
+        runtimeSession?.invalidate()
+        runtimeSession = nil
         phase = .idle
         currentSetReps = 0
         lastSetReps = nil
         setNumber = 1
         detector.reset()
+        store.clear()
     }
 
     // MARK: Private
 
-    @MainActor
-    private func beginWorkout() {
-        let config = HKWorkoutConfiguration()
-        config.activityType = .traditionalStrengthTraining
-        config.locationType = .indoor
-        do {
-            let session = try HKWorkoutSession(healthStore: healthStore, configuration: config)
-            let builder = session.associatedWorkoutBuilder()
-            builder.dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: config)
-            self.workoutSession = session
-            self.workoutBuilder = builder
-            session.startActivity(with: Date())
-            builder.beginCollection(withStart: Date()) { _, _ in }
-            sampler.start()
-            phase = .active
-        } catch {
-            phase = .authDenied
-        }
+    private func startRuntimeSession() {
+        let session = WKExtendedRuntimeSession()
+        session.delegate = self
+        runtimeSession = session
+        session.start()
     }
 
     @MainActor
@@ -120,5 +110,81 @@ final class WorkoutSession: NSObject {
             currentSetReps = 0
             WKInterfaceDevice.current().play(.success)
         }
+        persist()
+    }
+
+    private func persist() {
+        store.save(.init(currentSetReps: currentSetReps,
+                         lastSetReps: lastSetReps,
+                         setNumber: setNumber))
+    }
+}
+
+// MARK: - WKExtendedRuntimeSessionDelegate
+
+extension WorkoutSession: WKExtendedRuntimeSessionDelegate {
+
+    func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        // No-op: motion sampling is already running.
+    }
+
+    func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        // The system is about to reclaim this session. Start a fresh one so the
+        // process — and therefore motion sampling — keeps going without a gap.
+        guard phase == .active else { return }
+        startRuntimeSession()
+    }
+
+    func extendedRuntimeSession(_ extendedRuntimeSession: WKExtendedRuntimeSession,
+                                didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
+                                error: Error?) {
+        // Only react to the session we currently hold; a renewed session
+        // supersedes an expiring one, whose invalidation we can ignore.
+        guard extendedRuntimeSession === runtimeSession else { return }
+        runtimeSession = nil
+
+        switch reason {
+        case .sessionInProgress, .expired:
+            // Recoverable: try to keep counting if the user is still working out.
+            if phase == .active {
+                startRuntimeSession()
+            }
+        default:
+            // .error, .resignedFrontmost, .suppressedBySystem, etc. — the app
+            // may now be suspended when the screen sleeps. Surface it; the
+            // persisted count is safe either way.
+            if phase == .active || phase == .paused {
+                phase = .failed
+            }
+        }
+    }
+}
+
+// MARK: - Persistence
+
+/// Persists the running rep tally across launches so an expired or killed
+/// session never loses the count already accumulated.
+private struct RepStore {
+    struct Snapshot: Codable {
+        var currentSetReps: Int
+        var lastSetReps: Int?
+        var setNumber: Int
+    }
+
+    private let key = "RepCounter.inProgressSnapshot"
+    private let defaults = UserDefaults.standard
+
+    func save(_ snapshot: Snapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    func load() -> Snapshot? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(Snapshot.self, from: data)
+    }
+
+    func clear() {
+        defaults.removeObject(forKey: key)
     }
 }
