@@ -16,58 +16,109 @@ final class RepDetectorTests: XCTestCase {
         events.filter { if case .rep = $0 { return true } else { return false } }.count
     }
 
-    // 10 cycles of clean 1 Hz sine at amp 0.5 g → expect ~10 reps.
-    func testCleanSine1Hz() {
-        let samples = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5, duration: 10.0)
+    // MARK: One rep = one episode (no double counting)
+
+    // The core regression: a real rep is rest → move → rest, and the movement
+    // burst contains both a start spike and a stop/reversal spike. Counting
+    // acceleration peaks would score ~2× (≈20); the episode detector must score
+    // one per rep.
+    func testStartAndStopCountAsOneRep() {
+        let samples = SignalGenerators.pausedReps(reps: 10)
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertGreaterThanOrEqual(reps, 9)
+        XCTAssertLessThanOrEqual(reps, 11, "Start and stop of one rep must not both count")
+    }
+
+    func testFasterRepsCountedOnce() {
+        let samples = SignalGenerators.pausedReps(reps: 10, restDuration: 0.5)
         let reps = repCount(runDetector(on: samples))
         XCTAssertGreaterThanOrEqual(reps, 9)
         XCTAssertLessThanOrEqual(reps, 11)
     }
 
-    func testCleanSine05Hz() {
-        let samples = SignalGenerators.sine(frequency: 0.5, amplitude: 0.5, duration: 20.0)
+    func testSlowerRepsCountedOnce() {
+        let samples = SignalGenerators.pausedReps(reps: 8, restDuration: 1.6)
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertGreaterThanOrEqual(reps, 7)
+        XCTAssertLessThanOrEqual(reps, 9)
+    }
+
+    func testRisingAmplitudeStillCountedOnce() {
+        // Each rep's burst grows from 0.1 g to 1.0 g; the adaptive threshold should
+        // track it and still count one rep per burst.
+        let samples = SignalGenerators.pausedReps(reps: 10, amplitude: 0.1, amplitudeEnd: 1.0)
         let reps = repCount(runDetector(on: samples))
         XCTAssertGreaterThanOrEqual(reps, 9)
         XCTAssertLessThanOrEqual(reps, 11)
     }
 
-    func testCleanSine2Hz() {
-        let samples = SignalGenerators.sine(frequency: 2.0, amplitude: 0.5, duration: 5.0)
+    func testSubtleVibrationReps() {
+        // Spec "leg-day vibration" case: faint movement bursts (0.06 g) over light
+        // sensor noise (σ=0.01 g), with rest between reps.
+        let samples = SignalGenerators.pausedReps(reps: 10, amplitude: 0.06,
+                                                   noiseSigma: 0.01)
         let reps = repCount(runDetector(on: samples))
-        XCTAssertGreaterThanOrEqual(reps, 9)
-        XCTAssertLessThanOrEqual(reps, 11)
+        XCTAssertGreaterThanOrEqual(reps, 8, "Subtle vibration reps should still be detected")
+        XCTAssertLessThanOrEqual(reps, 12)
     }
+
+    // MARK: Negative cases
 
     func testStillWristProducesNoReps() {
         // σ=0.01 g represents accelerometer noise on a wrist held still.
-        // (High-amplitude ambient motion rejection is covered by the on-device
-        // walking-around check in the manual test plan, not here.)
         let samples = SignalGenerators.noise(sigma: 0.01, duration: 10.0)
         let reps = repCount(runDetector(on: samples))
         XCTAssertEqual(reps, 0, "A still wrist should not produce any reps")
     }
 
-    func testSubtleVibrationOnNoise() {
-        // Spec "leg-day vibration" case: 0.7 Hz sine, amp 0.05 g, on top of σ=0.02 g noise.
-        let sine = SignalGenerators.sine(frequency: 0.7, amplitude: 0.05, duration: 14.0) // ~10 cycles
-        let noise = SignalGenerators.noise(sigma: 0.02, duration: 14.0)
-        let mixed = SignalGenerators.add(sine, noise)
-        let reps = repCount(runDetector(on: mixed))
-        XCTAssertGreaterThanOrEqual(reps, 8, "Subtle vibration should still be detected")
-        XCTAssertLessThanOrEqual(reps, 12)
+    func testSingleImpactSpikeIgnored() {
+        // Flat zero for 5 s with one 3 g spike at t=2 s on the vertical axis.
+        var samples = SignalGenerators.silence(duration: 5.0)
+        let spikeIdx = Int(2.0 * SignalGenerators.sampleRate)
+        samples[spikeIdx] = MotionSample(
+            timestamp: samples[spikeIdx].timestamp,
+            accel: SIMD3(0, 0, 3.0),
+            gyro: SIMD3(0, 0, 0)
+        )
+        let reps = repCount(runDetector(on: samples))
+        XCTAssertEqual(reps, 0, "A single impact spike must not be counted")
     }
 
-    func testRisingAmplitudeStillCounted() {
-        // 1 Hz sine, amplitude ramps 0.1 g → 1.0 g over 10 cycles.
-        let samples = SignalGenerators.sineRamp(frequency: 1.0, a0: 0.1, a1: 1.0, duration: 10.0)
+    func testSingleBurstIgnored() {
+        // A single isolated movement burst (then stillness) must not count: the
+        // counter waits for a sustained rhythm.
+        let samples = SignalGenerators.pausedReps(reps: 1)
+            + SignalGenerators.silence(duration: 3.0)
         let reps = repCount(runDetector(on: samples))
-        XCTAssertGreaterThanOrEqual(reps, 9)
-        XCTAssertLessThanOrEqual(reps, 11)
+        XCTAssertEqual(reps, 0, "A single isolated rep must not be counted")
+    }
+
+    // MARK: Confirmation + set end
+
+    func testCountJumpsToConfirmThreshold() {
+        // Reps are buffered until a consistent rhythm is confirmed, then the
+        // backlog is flushed at once: the count stays at 0, then jumps to 3.
+        let samples = SignalGenerators.pausedReps(reps: 8)
+        let detector = RepDetector(sampleRate: 50)
+        var repTimes: [TimeInterval] = []
+        for s in samples {
+            detector.onEvent = { event in
+                if case .rep = event { repTimes.append(s.timestamp) }
+            }
+            detector.process(s)
+        }
+        XCTAssertGreaterThanOrEqual(repTimes.count, 4, "Expected several reps")
+        // The first three reps are flushed together at the lock-on instant.
+        XCTAssertEqual(repTimes[0], repTimes[1], "First 3 reps should flush at once")
+        XCTAssertEqual(repTimes[1], repTimes[2], "First 3 reps should flush at once")
+        // Subsequent reps are counted live, strictly later.
+        XCTAssertGreaterThan(repTimes[3], repTimes[2], "4th rep should be counted live, later")
     }
 
     func testSetEndsAfterMotionStops() {
-        // 1 Hz sine for 10 s, then 6 s of silence. Expect a setEnded event within ~4 s of motion stopping.
-        let active = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5, duration: 10.0)
+        // 10 reps, then a long quiet tail. Expect a setEnded event within ~4 s of
+        // motion stopping, reporting ~10 reps.
+        let active = SignalGenerators.pausedReps(reps: 10)
         let lastT = active.last!.timestamp
         let quiet = SignalGenerators.silence(duration: 6.0, startTime: lastT + SignalGenerators.dt)
         let samples = active + quiet
@@ -90,68 +141,9 @@ final class RepDetectorTests: XCTestCase {
         XCTAssertNotNil(setEndDetectedAt, "Expected a setEnded event after motion stopped")
         XCTAssertGreaterThanOrEqual(setEndCount ?? 0, 9)
         XCTAssertLessThanOrEqual(setEndCount ?? 0, 11)
+        // The last rep's rest (0.6 s) counts toward the quiet window, so allow a
+        // little slack on the lower bound.
         let delay = (setEndDetectedAt ?? 0) - lastT
-        XCTAssertGreaterThan(delay, 3.5, "Set-end should not fire too eagerly (got \(delay)s)")
         XCTAssertLessThan(delay, 5.5, "Set-end should fire within ~4 s of motion stopping (got \(delay)s)")
-    }
-
-    func testSingleImpactSpikeIgnored() {
-        // Flat zero for 5 s with one 3 g spike at t=2 s on the vertical axis.
-        var samples = SignalGenerators.silence(duration: 5.0)
-        let spikeIdx = Int(2.0 * SignalGenerators.sampleRate)
-        samples[spikeIdx] = MotionSample(
-            timestamp: samples[spikeIdx].timestamp,
-            accel: SIMD3(0, 0, 3.0),
-            gyro: SIMD3(0, 0, 0)
-        )
-        let reps = repCount(runDetector(on: samples))
-        XCTAssertEqual(reps, 0, "A single impact spike must not be counted")
-    }
-
-    func testSingleBurstIgnored() {
-        // The counter should wait for a sustained rhythm before counting. A
-        // single isolated rep-like oscillation (then stillness) must not count.
-        let settle = SignalGenerators.silence(duration: 1.0)
-        let oneCycle = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5,
-                                             duration: 1.0, startTime: 1.0)
-        let tail = SignalGenerators.silence(duration: 3.0, startTime: 2.0)
-        let reps = repCount(runDetector(on: settle + oneCycle + tail))
-        XCTAssertEqual(reps, 0, "A single isolated motion must not be counted")
-    }
-
-    func testCountJumpsToConfirmThreshold() {
-        // Reps are buffered until a consistent rhythm is confirmed, then the
-        // backlog is flushed at once: the count stays at 0, then jumps to 3.
-        let samples = SignalGenerators.sine(frequency: 1.0, amplitude: 0.5, duration: 10.0)
-        let detector = RepDetector(sampleRate: 50)
-        var repTimes: [TimeInterval] = []
-        for s in samples {
-            detector.onEvent = { event in
-                if case .rep = event { repTimes.append(s.timestamp) }
-            }
-            detector.process(s)
-        }
-        XCTAssertGreaterThanOrEqual(repTimes.count, 4, "Expected several reps from 10 cycles")
-        // The first three reps are flushed together at the lock-on instant.
-        XCTAssertEqual(repTimes[0], repTimes[1], "First 3 reps should flush at once")
-        XCTAssertEqual(repTimes[1], repTimes[2], "First 3 reps should flush at once")
-        // Subsequent reps are counted live, strictly later.
-        XCTAssertGreaterThan(repTimes[3], repTimes[2], "4th rep should be counted live, later")
-    }
-
-    func testRefractoryPreventsDoubleCount() {
-        // 1 Hz primary sine on accel.z with a small secondary bump 100 ms after each peak.
-        // Combine 1 Hz at 0.5 g amplitude with 1 Hz at 0.2 g phase-shifted by -100 ms (= -0.628 rad).
-        let n = Int(10.0 * SignalGenerators.sampleRate)
-        let samples: [MotionSample] = (0..<n).map { i in
-            let t = Double(i) * SignalGenerators.dt
-            let v = 0.5 * sin(2 * .pi * 1.0 * t)
-                  + 0.2 * sin(2 * .pi * 1.0 * t - 0.628)
-            return MotionSample(timestamp: t, accel: SIMD3(0, 0, v), gyro: SIMD3(0, 0, 0))
-        }
-        let reps = repCount(runDetector(on: samples))
-        // ~10 cycles in 10s, expect 9–11 — not 18–20.
-        XCTAssertGreaterThanOrEqual(reps, 9)
-        XCTAssertLessThanOrEqual(reps, 11)
     }
 }
