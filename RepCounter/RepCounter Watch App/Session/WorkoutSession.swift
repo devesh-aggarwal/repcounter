@@ -56,11 +56,12 @@ final class WorkoutSession: NSObject {
     func start() {
         guard phase == .idle || phase == .failed else { return }
         detector.reset()
-        sampler.start()
-        // Flip to the active UI before touching the runtime session: its start()
-        // can stall on device, and we never want that between the tap and the
-        // first render.
+        // Flip to the active UI before any startup work: both the motion sampler
+        // and the runtime session can stall on device (especially the first time
+        // the motion subsystem spins up after launch), and we never want that
+        // between the tap and the first render. Both calls below are non-blocking.
         phase = .active
+        sampler.start()
         startRuntimeSession()
     }
 
