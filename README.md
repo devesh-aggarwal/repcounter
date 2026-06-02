@@ -15,7 +15,8 @@ Three layers:
 2. **`RepDetector`** — pure Swift signal-processing pipeline:
    - Band-pass IIR (0.25 Hz HPF + 4 Hz LPF) on the signed vertical-axis accel.
    - Rolling-RMS envelope over 2 s; threshold scales adaptively so a quiet leg-vibration registers at the same relative scale as a big arm swing.
-   - Hysteresis peak detection with an adaptive refractory locked to 0.6× observed rep period after 3 reps.
+   - Hysteresis peak detection produces one candidate per oscillation of the band-passed signal.
+   - Rhythm confirmation: candidates are buffered and nothing is counted until 3 consecutive oscillations arrive at a consistent tempo. On lock-on the backlog is flushed at once (the count jumps straight to 3) and reps are then counted live. This rejects one-off / random motion and, by fixing the rep period before counting, sets the refractory (0.6× the observed period) so the secondary within-rep peak is rejected from the very first counted rep — no more counting both the start and the reversal of a rep.
    - Set-end fires when envelope drops below 30% of its peak and no rep has emitted for 4 s.
    - Absolute-spike + env-jump impact suppression for dropped weights.
 3. **`WorkoutSession`** — orchestrates `HKWorkoutSession` + `MotionSampler` + `RepDetector`, exposes `@Observable` state to the SwiftUI view, and fires haptics on rep / set-end events.
