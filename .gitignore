@@ -1,8 +1,25 @@
+# Xcode
 build/
 DerivedData/
+*.xcuserstate
 *.xcuserdatad/
 xcuserdata/
-*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
 .DS_Store
-docs/
-.claude 
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods / Carthage (unused, but ignored if added)
+Pods/
+Carthage/Build/
+
+# Claude Code session-local settings
+.claude/
